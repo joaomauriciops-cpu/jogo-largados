@@ -42,6 +42,9 @@ def measure(cfg, n, games, seed):
 V05 = dict(reveal_ring1=True, order='snake', exh_pe=1,
            hunter_fail_faces=1, builder_start_wood=1, surv_mode='all')
 
+V06 = dict(V05, week_water=(1, 2, 2))
+COOP06 = dict(coop_shelter_cap=4, transfer_range=1, care=True, pool_at_check=True)
+
 VARIANTS = {
     'v0.4 (manual)': dict(),
     '3 PE': dict(pe=3),
@@ -58,6 +61,7 @@ VARIANTS = {
     'Exaustão elimina em 2': dict(exh_limit=2),
     'com Exaustão, 3 PE': dict(exh_pe=1),
     'proposta v0.5': V05,
+    'proposta v0.6': V06,
 }
 
 

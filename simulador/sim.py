@@ -7,7 +7,7 @@ taxa de conclusão, pontuação, equilíbrio de arquétipos e de assentos.
 Uso rápido:
     python3 sim.py                # relatório padrão
     python3 sim.py --trace 4      # imprime o log de uma partida com 4 pessoas
-    python3 sim.py --v05          # mesmas medições com a proposta v0.5
+    python3 sim.py --v06          # mesmas medições com a proposta v0.6
 """
 from __future__ import annotations
 
@@ -70,6 +70,11 @@ class Config:
     hunter_safe: bool = False         # Caçador não rola o dado de risco
     hunter_fail_faces: int = 0        # se >0: Caçador só falha o risco com resultado <= esse valor
     builder_start_wood: int = 0       # Construtor começa com essa madeira
+    coop_shelter_cap: int = 0         # coop: até N pessoas podem morar no mesmo abrigo (0 = desligado)
+    transfer_range: int = 0           # coop: 0 = mesmo tile, 1 = também tiles adjacentes
+    transfer_pe: int = 1              # coop: custo de Transferir
+    pool_at_check: bool = False       # coop: na Prova, quem divide o tile junta comida e água
+    care: bool = False                # coop: Cuidar (1 PE + 1 comida sua: colega no mesmo tile perde 1 Exaustão)
     reveal_ring1: bool = False        # vizinhos do Início começam revelados (sem Evento)
     collect_limit: str = 'tile'       # 'tile' (manual) | 'player' | 'none'
     surv_mode: str = 'risk'           # 'risk' (manual) | 'any' (qualquer Exaustão de dado/evento)
@@ -142,6 +147,10 @@ class Player:
     pe: int = 0
     known: dict = field(default_factory=dict)   # pistas: pos -> tipo
     ai: dict = field(default_factory=dict)      # parâmetros de IA deste jogador
+    group: list = None                          # moradores do mesmo abrigo (coop)
+    transfers: int = 0
+    cared: bool = False                         # já recebeu Cuidar nesta semana
+    cares: int = 0
     # estatísticas
     exh_src: collections.Counter = field(default_factory=collections.Counter)
     pe_unused: int = 0
@@ -385,7 +394,18 @@ class Game:
         if p.shelter == 0:
             p.shelter_pos = p.pos
         p.shelter += 1
+        if p.group is None:
+            p.group = [p]
+        for q in p.group:
+            q.shelter, q.shelter_pos = p.shelter, p.shelter_pos
         self.say(f'    P{p.idx} abrigo nível {p.shelter} em {p.pos}')
+
+    def join(self, p, host):
+        p.pe -= 1
+        host.group.append(p)
+        p.group = host.group
+        p.shelter, p.shelter_pos = host.shelter, host.shelter_pos
+        self.say(f'    P{p.idx} passa a morar no abrigo de P{host.idx} (nível {host.shelter})')
 
     def rest(self, p):
         at = p.shelter > 0 and p.shelter_pos == p.pos
@@ -396,16 +416,53 @@ class Game:
         p.exh = max(0, p.exh - rem)
         self.say(f'    P{p.idx} descansa (-{rem} exaustão)')
 
-    def transfer(self, p, q, res, n):
+    def care(self, p, q):
         p.pe -= 1
+        p.food -= 1
+        p.cares += 1
+        q.cared = True
+        q.exh = max(0, q.exh - 1)
+        self.say(f'    P{p.idx} cuida de P{q.idx} (-1 exaustão)')
+
+    def transfer(self, p, q, res, n):
+        p.pe -= self.cfg.transfer_pe
+        p.transfers += 1
         p.add(res, -n)
         q.add(res, n)
         self.say(f'    P{p.idx} transfere {n} {res} para P{q.idx}')
 
     # -- fluxo
+    def pool_resources(self):
+        w = self.week()
+        cfg = self.cfg
+        groups = collections.defaultdict(list)
+        for p in self.players:
+            if p.alive:
+                groups[p.pos].append(p)
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            for res, req in (('food', cfg.week_food[w]), ('water', cfg.week_water[w])):
+                short = sorted((q for q in members if q.get(res) < req), key=lambda q: req - q.get(res))
+                for q in short:
+                    need = req - q.get(res)
+                    donors = sorted((d for d in members if d.get(res) > req), key=lambda d: -d.get(res))
+                    avail = sum(d.get(res) - req for d in donors)
+                    if avail < need:
+                        break
+                    for d in donors:
+                        give = min(need, d.get(res) - req)
+                        d.add(res, -give)
+                        q.add(res, give)
+                        need -= give
+                        if need == 0:
+                            break
+
     def weekly_check(self):
         w = self.week()
         cfg = self.cfg
+        if cfg.mode == 'coop' and cfg.pool_at_check:
+            self.pool_resources()
         for p in self.players:
             if not p.alive:
                 continue
@@ -428,6 +485,7 @@ class Game:
                 p.food = 0
             p.ability_used = False
             p.rest_used = False
+            p.cared = False
         self.say(f'  == Prova semana {w + 1}: ' + ', '.join(
             f'P{p.idx} exh={p.exh} abr={p.shelter}{"" if p.alive else " X"}' for p in self.players))
 
@@ -501,7 +559,8 @@ class Game:
                             pe_unused=p.pe_unused, reveals=p.reveals, collects=p.collects,
                             items=len(p.items), died=p.died_round,
                             left=p.food + p.water + p.wood,
-                            good_ev=p.good_ev, bad_ev=p.bad_ev))
+                            good_ev=p.good_ev, bad_ev=p.bad_ev, transfers=p.transfers,
+                            shared=p.group is not None and len(p.group) > 1))
         return out
 
 
@@ -720,8 +779,12 @@ def required_end_cost(g, p, pos):
     return fetch + g.dist(via, p.shelter_pos) + builds + dres(p.shelter_pos)
 
 
+def pe_per_turn(g, p):
+    return g.cfg.pe - (1 if g.cfg.exh_pe and p.exh >= g.cfg.exh_pe else 0)
+
+
 def future_budget(g, p):
-    return g.cfg.pe * (g.cfg.rounds - g.round)
+    return pe_per_turn(g, p) * (g.cfg.rounds - g.round)
 
 
 def plan_step(g, p):
@@ -793,9 +856,33 @@ def candidate_actions(g, p):
             if val > 0:
                 cands.append((val / cost, ('rest',), None))
     # transferir (coop)
-    if cfg.mode == 'coop':
+    if cfg.mode == 'coop' and cfg.coop_shelter_cap and p.shelter == 0:
         for q in g.players:
-            if q is p or not q.alive or q.pos != p.pos:
+            if (q is p or q.shelter == 0 or q.group is None
+                    or len(q.group) >= cfg.coop_shelter_cap):
+                continue
+            d = g.dist(p.pos, q.shelter_pos)
+            if d == 0:
+                cands.append((12.0, ('join', q), None))
+            else:
+                cands.append((10.0 / (d + 1), ('goto', q.shelter_pos), None))
+    if cfg.mode == 'coop' and cfg.care and p.food > 0:
+        spare = p.food > cur_food_req(g)
+        for q in g.players:
+            if q is p or not q.alive or q.exh == 0 or q.cared:
+                continue
+            gain = exh_cost(q, cfg) * 0.6
+            val = gain - (0 if spare else food_value(g, p, extra=-1) * 0.5)
+            if val <= 0:
+                continue
+            d = g.dist(p.pos, q.pos)
+            if d == 0:
+                cands.append((val, ('care', q), None))
+            elif q.exh >= 2:
+                cands.append((val / (d + 1), ('goto', q.pos), None))
+    if cfg.mode == 'coop' and p.pe >= cfg.transfer_pe:
+        for q in g.players:
+            if q is p or not q.alive or g.dist(q.pos, p.pos) > cfg.transfer_range:
                 continue
             for res in RES:
                 need_q = team_need(g, q, res)
@@ -833,7 +920,7 @@ def candidate_actions(g, p):
     # levar recursos a um aliado (coop)
     if cfg.mode == 'coop':
         for q in g.players:
-            if q is p or not q.alive or q.pos == p.pos:
+            if q is p or not q.alive or g.dist(q.pos, p.pos) <= cfg.transfer_range:
                 continue
             for res in RES:
                 n = min(2, team_need(g, q, res), team_surplus(g, p, res))
@@ -870,6 +957,10 @@ def apply_action(g, p, act):
         g.build(p)
     elif kind == 'rest':
         g.rest(p)
+    elif kind == 'care':
+        g.care(p, act[1])
+    elif kind == 'join':
+        g.join(p, act[1])
     elif kind == 'transfer':
         g.transfer(p, *act[1:])
     elif kind == 'goto':
@@ -886,6 +977,10 @@ def sim_after(g, p, act):
         return p.pos, p.pe - (1 if at else g.cfg.rest_cost), p.shelter, p.shelter_pos
     if kind == 'build':
         return p.pos, p.pe - 1, p.shelter + 1, p.shelter_pos or p.pos
+    if kind == 'join':
+        return p.pos, p.pe - 1, act[1].shelter, act[1].shelter_pos
+    if kind == 'transfer':
+        return p.pos, p.pe - g.cfg.transfer_pe, p.shelter, p.shelter_pos
     return p.pos, p.pe - 1, p.shelter, p.shelter_pos
 
 
@@ -898,7 +993,7 @@ def feasible(g, p, act):
 
 
 def take_turn(g, p):
-    p.pe = g.cfg.pe - (1 if g.cfg.exh_pe and p.exh >= g.cfg.exh_pe else 0)
+    p.pe = pe_per_turn(g, p)
     guard = 0
     while p.pe > 0 and p.alive and guard < 20:
         guard += 1
@@ -923,10 +1018,7 @@ def take_turn(g, p):
         act, claim = chosen
         if claim is not None:
             g.claims[claim] = p.idx
-        before = p.pe
         apply_action(g, p, act)
-        if p.pe == before:
-            break
     p.pe_unused += max(0, p.pe)
 
 
@@ -1021,12 +1113,13 @@ def main():
     ap.add_argument('--seed', type=int, default=7)
     ap.add_argument('--mode', default='comp')
     ap.add_argument('--pe', type=int, default=4)
-    ap.add_argument('--v05', action='store_true', help='usa a proposta de regras v0.5')
+    ap.add_argument('--v06', action='store_true', help='usa a proposta de regras v0.6')
     a = ap.parse_args()
     cfg = Config(pe=a.pe, mode=a.mode)
-    if a.v05:
-        from experimentos import V05
-        cfg = Config(pe=a.pe, mode=a.mode, **V05)
+    if a.v06:
+        from experimentos import V06, COOP06
+        extra = COOP06 if a.mode == 'coop' else {}
+        cfg = Config(pe=a.pe, mode=a.mode, **V06, **extra)
     if a.trace:
         g = Game(a.trace, cfg, random.Random(a.seed), trace=True)
         for r in range(g.rows):

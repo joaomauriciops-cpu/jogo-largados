@@ -1,10 +1,12 @@
-# Análise por simulação — Largados e Pelados v0.4
+# Análise por simulação — Largados e Pelados (v0.4 → proposta v0.6)
 
 Objetivos informados pelo autor:
 - **modos:** competitivo e cooperativo com o mesmo peso;
 - **dificuldade:** um jogador competente conclui a prova em **60–70%** das partidas;
 - **público:** gamers, partidas de 45–75 min;
-- **interação entre jogadores:** a decidir com base nos dados.
+- **interação entre jogadores:** a decidir com base nos dados;
+- **cooperativo:** mesma taxa de vitória do competitivo, com qualquer número de jogadores;
+- **pontuação:** a sobrevivência continua no centro.
 
 ## Como a simulação foi feita
 
@@ -80,44 +82,68 @@ As tendências e as comparações entre variantes são mais confiáveis que os v
 | água 1/2/2 | 85% | 57% | 11 | |
 | semana 3 = 4 comidas | 87% | 65% | 10 | |
 | Exaustão elimina em 2 | 75% | 36% | 9 | eliminação de 22% (punitivo) |
-| **com Exaustão, recebe 3 PE** | **~70%** | ~20–50% | — | acerta a meta, com efeito de "espiral" temático |
+| **com Exaustão, recebe 3 PE** | ~70%* | ~20–50%* | — | o ajuste mais gradual; *medido antes da correção da IA (ver abaixo) |
 
 Efeito colateral da regra "Exaustão tira 1 PE": o **Caçador** despenca (0,65×), porque a habilidade o empurra para os tiles de risco. Dar a ele imunidade total ao risco foi exagero (1,6×). Falhar só com o resultado 1 ficou equilibrado.
 
-## Proposta v0.5 (testada)
+## Proposta v0.6 (testada)
 
-1. **Os 6 vizinhos do Início começam revelados**, com as fichas colocadas e sem comprar Evento. Corrige a vantagem de assento e deixa a abertura menos cega.
+Critérios definidos pelo autor na segunda rodada:
+- o cooperativo deve ter **a mesma taxa de vitória** que a conclusão individual no competitivo, com 2, 3 ou 4 pessoas;
+- a **sobrevivência continua no centro** da pontuação, sem caminhos alternativos de PS.
+
+> **Correção:** a IA calculava o caminho até o Resgate como se sempre recebesse 4 PE, mesmo quando a Exaustão a deixava com 3. Corrigido isso, a IA conclui mais vezes. Os números da "v0.5" que passei antes (75–78%) estavam pessimistas; o correto é 82–86%. Por isso entrou mais um ajuste de dificuldade (água 1/2/2), e a tabela de variantes acima traz a v0.4, que não foi afetada.
+
+### Regras para os dois modos
+1. **Os 6 vizinhos do Início começam revelados**, com as fichas colocadas e sem comprar Evento. Corrige a vantagem de assento.
 2. **Ordem serpente**: 1-2-3-4, depois 4-3-2-1, e o primeiro jogador avança a cada duas rodadas.
-3. **Exaustão cansa**: quem tem 1 ou mais Exaustões recebe **3 PE** em vez de 4. É o ajuste de dificuldade, e dá peso real à ação Descansar.
-4. **Caçador**: no dado de risco dos tiles da habilidade dele, só o resultado **1** dá Exaustão.
-5. **Construtor**: começa com **1 madeira**.
-6. **Sobrevivencialista**: uma vez por semana, ignore **uma Exaustão de qualquer fonte**, exceto a Prova Semanal com as duas categorias em falta.
+3. **Exaustão cansa**: quem tem 1 ou mais Exaustões recebe **3 PE** em vez de 4.
+4. **Água nas Provas: 1 / 2 / 2** (era 1 / 1 / 2).
+5. **Caçador**: no dado de risco, só o resultado **1** dá Exaustão.
+6. **Construtor**: começa com **1 madeira**.
+7. **Sobrevivencialista**: uma vez por semana, ignore **uma Exaustão de qualquer fonte**, inclusive da Prova.
 
-   *No simulador, a habilidade vale para dado, Evento e Prova.*
+### Regras só do cooperativo
+8. **Acampamento do grupo**: estando no tile de um abrigo de outra pessoa do grupo, gaste **1 PE para passar a morar nele**. Quem mora junto divide o abrigo: qualquer morador pode melhorá-lo, e todos contam o nível dele para o Resgate.
+9. **Transferir** alcança **o mesmo tile ou um adjacente**.
+10. **Cuidar** (nova ação, 1 PE + 1 comida sua): uma pessoa do grupo no seu tile retira 1 Exaustão. Cada pessoa pode receber Cuidar uma vez por semana.
+11. **Juntar na Prova**: na Prova Semanal, quem está no mesmo tile pode juntar comida e água para completar o pagamento de quem está em falta.
 
-| jogadores | conclui | todos concluem | coop vence | eliminados | PS médio | empate | Δ assentos | Δ arquétipos |
-|---|---|---|---|---|---|---|---|---|
-| 2 | 78% | 60% | 60% | 12% | 9,0 | 4% | 0 p.p. | 9 p.p. |
-| 3 | 77% | 44% | 44% | 12% | 8,8 | 9% | 2 p.p. | 11 p.p. |
-| 4 | 75% | 29% | 31% | 12% | 8,5 | 12% | 4 p.p. | 13 p.p. |
+### Resultado (2.000 partidas por célula)
 
-Arquétipos com 4 jogadores (vitória ÷ taxa justa): Caçador 1,16 · Coletor 1,22 · Pescador 0,93 · Construtor 0,84 · Sobrevivencialista 0,85. Antes a faixa era 0,57–1,40.
+| jogadores | competitivo: conclui | cooperativo: grupo vence | eliminados (comp.) | PS médio | empate | Δ assentos |
+|---|---|---|---|---|---|---|
+| 2 | 78% | 74% | 20% | 7,5 | 5% | 3 p.p. |
+| 3 | 77% | 70% | 21% | 7,3 | 9% | 0 p.p. |
+| 4 | 75% | 69% | 21% | 7,0 | 11% | 5 p.p. |
 
-A IA conclui em ~75%. Pessoas cometem mais erros de rota que a IA, então a taxa real deve ficar na faixa de 60–70% que você quer. Confirme em mesa.
+Para comparação, na v0.4 o competitivo concluía 91–94%, e o cooperativo caía de 91% (2 pessoas) para 74% (4 pessoas).
 
-## O que ainda precisa de trabalho (não testado)
+Arquétipos com 4 jogadores (vitória ÷ taxa justa): Caçador 1,15 · Coletor 1,18 · Pescador 0,93 · Construtor 0,89 · Sobrevivencialista 0,84. Na v0.4 a faixa era 0,66–1,20, com o Sobrevivencialista isolado no fim.
 
-- **Cooperativo com a mesma dificuldade para 2 e 4 jogadores.** Hoje a chance de vitória cai muito com mais gente. Ideias:
-  - **abrigo compartilhado**: duas pessoas no mesmo abrigo nível 3 dividem o custo;
-  - Transferir entre tiles adjacentes;
-  - "o grupo vence se até 1 pessoa desistir, com penalidade".
-- **Mais caminhos de pontuação para gamers.** Por exemplo:
-  - pontos de "audiência" por revelar tiles, arriscar e ajudar alguém;
-  - objetivos secretos por arquétipo.
+### O que cada regra do cooperativo contribui (4 pessoas, com as regras 1–7)
 
-  Isso cria dilemas entre segurança e pontos. Hoje o PS mede basicamente "quem teve menos azar".
-- **Menos variância nos Eventos.** Trocar Cansaço/Vazamento por escolhas ("perca 1 água OU 1 PE") mantém a tensão e tira parte da sorte pura.
-- **Interação.** Os dados mostram só uma corrida indireta: tiles finitos e uma coleta por rodada. Se quiser mais conflito, cartas de "edição do programa" (câmera, tempestade no tile de alguém) seriam o lugar natural.
+| cooperativo | grupo vence |
+|---|---|
+| só as regras do manual | 31–35% |
+| + Transferir adjacente | 35% |
+| + abrigo para 2 pessoas | 52% |
+| + acampamento do grupo | 59% |
+| + Cuidar | 66% |
+| + Juntar na Prova (proposta completa) | 69% |
+
+A diferença de 1 a 5 p.p. entre os modos parece pequena, mas a IA coopera pior que pessoas. Na mesa, o cooperativo tende a ficar igual ou um pouco mais fácil que o competitivo. Se ficar fácil demais, a primeira regra a cortar é Juntar na Prova, depois Cuidar.
+
+A variante "abrigo para no máximo 2 pessoas" também funciona (74% / 67% / 61%), mas volta a cair com 4 jogadores.
+
+### Sobre as eliminações (20% no competitivo)
+Quase todas acontecem **na Prova final** (rodada 9): 581 de 679 eliminações com 4 pessoas. Ninguém passa meia hora fora da mesa. Isso concentra o drama no final ("vai dar ou não vai?"), bem no espírito da série. Se a mesa achar cruel perder tudo na última Prova, uma opção é **quem é eliminado na Prova final desiste do programa, mas pontua metade**.
+
+## O que ainda vale testar em mesa
+
+- **Sorte nos Eventos.** Mantendo a sobrevivência no centro, dá para reduzir o azar puro trocando Cansaço e Vazamento por escolhas ("perca 1 água OU receba 1 Exaustão"). Quem tira 2 Eventos ruins ainda vence bem menos que quem não tira nenhum.
+- **Taxa real de conclusão.** A IA conclui ~76%. Pessoas erram rotas e contas, então a expectativa é ficar entre 60 e 70%. Se ficar abaixo de 55%, volte a água para 1/1/2.
+- **Coletor e Caçador** estão cerca de 15–20% acima da taxa justa com 3–4 pessoas. Se aparecer em mesa, reduzir a Clareira para 2 comidas sem madeira, ou trocar uma Clareira por Floresta, deve bastar.
 
 ## Pontos do manual que ficaram ambíguos (e como o simulador interpretou)
 
@@ -133,11 +159,13 @@ A IA conclui em ~75%. Pessoas cometem mais erros de rota que a IA, então a taxa
 ```bash
 cd simulador
 python3 sim.py                  # métricas v0.4 para 2, 3 e 4 pessoas
-python3 sim.py --v05            # mesmas métricas com a proposta
+python3 sim.py --v06            # mesmas métricas com a proposta v0.6
 python3 sim.py --trace 4        # log completo de uma partida
 python3 experimentos.py         # todas as variantes (demora alguns minutos)
-python3 final.py                # v0.4 contra a proposta v0.5
+python3 final.py                # v0.4 contra a v0.6, competitivo e cooperativo
+python3 coop_test.py            # contribuição de cada regra do cooperativo
+python3 ajuste.py               # ajuste de dificuldade (competitivo x cooperativo)
 python3 estilos.py              # torneio de estilos de jogo
 ```
 
-Cada regra nova é um campo de `Config` em `sim.py`: `pe`, `week_food`, `week_water`, `order`, `exh_pe`, `reveal_ring1`, `restock`, `collect_limit`, `surv_mode`, `hunter_fail_faces`, `builder_start_wood` etc. Para testar uma ideia nova, basta criar uma entrada em `VARIANTS`.
+Cada regra nova é um campo de `Config` em `sim.py`: `pe`, `week_food`, `week_water`, `order`, `exh_pe`, `reveal_ring1`, `restock`, `collect_limit`, `surv_mode`, `hunter_fail_faces`, `builder_start_wood`, `coop_shelter_cap`, `transfer_range`, `care`, `pool_at_check` etc. Para testar uma ideia nova, basta criar uma entrada em `VARIANTS`.
