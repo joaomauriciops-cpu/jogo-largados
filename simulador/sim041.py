@@ -42,6 +42,9 @@ EVENT_NAMES = {
     18: 'Abrigo em cúpula',
 }
 RES = ('food', 'water', 'wood')
+EVENTS_LEVES = {8, 9, 13, 14, 15, 16, 17, 18}          # ajudam ou dão opção sem risco
+EVENTS_MISTOS = {1, 3, 7, 11, 12}                     # troca de risco por recurso / atrito leve
+EVENTS_DUROS = {2, 4, 5, 6, 10}                       # custam PE, comida ou Desgaste
 
 
 @dataclass
@@ -58,6 +61,7 @@ class Config:
     exh_pe: int = 1                   # com Desgaste >= exh_pe, 1 PE a menos (0 = desligado)
     rest_cost: int = 2
     transfer_pe: int = 1
+    trail: bool = False               # 1 PE move até 2 tiles já explorados seguidos
     fire_cost: int = 1
     explore_cost: int = 1
     water_fire_test: bool = True      # teste de água sem fogo na Prova
@@ -66,6 +70,8 @@ class Config:
     tile_res: dict = None
     events: tuple = None              # None -> as 18 cartas
     events_per_game: int = 8
+    escalate: bool = False            # Eventos em 3 fases: leves (rod. 2-3), mistos (4-6), duros (7-9)
+    escalate_harsh: int = 3           # quantos Eventos duros entram na semana 3
     caps: tuple = (3, 2, 2)
     ai: dict = field(default_factory=dict)
 
@@ -126,6 +132,7 @@ class Player:
     pe: int = 0
     # por rodada (Eventos)
     target: tuple = None
+    move_credit: bool = False
     ev_used: bool = False
     turn_start_at_shelter: bool = False
     moved_this_round: bool = False
@@ -157,6 +164,12 @@ class Game:
         self.build_map()
         deck = list(EVENTS if cfg.events is None else cfg.events)
         rng.shuffle(deck)
+        if cfg.escalate:
+            leves = [e for e in deck if e in EVENTS_LEVES]
+            mistos = [e for e in deck if e in EVENTS_MISTOS]
+            duros = [e for e in deck if e in EVENTS_DUROS]
+            h = cfg.escalate_harsh
+            deck = duros[:h] + mistos[:6 - h] + leves[:2]   # pop() tira do fim
         self.event_deck = deck
         self.event = None
         archs = rng.sample(ARCHETYPES, n)
@@ -196,8 +209,8 @@ class Game:
             self.tiles[p] = Tile(k)
 
     # -- caminhos: entrar em tile oculto custa Mover + Explorar
-    def dist_map(self, src):
-        key = (src, self.version)
+    def dist_map(self, src, strict=False):
+        key = (src, self.version, strict)
         if key in self._dcache:
             return self._dcache[key]
         d = {src: 0}
@@ -207,15 +220,15 @@ class Game:
             if du > d[u]:
                 continue
             for v in self.adj[u]:
-                w = 1 if self.tiles[v].revealed else 1 + self.cfg.explore_cost
+                w = (0.5 if self.cfg.trail and not strict else 1) if self.tiles[v].revealed else 1 + self.cfg.explore_cost
                 if du + w < d.get(v, 1e9):
                     d[v] = du + w
                     heapq.heappush(h, (du + w, v))
         self._dcache[key] = d
         return d
 
-    def dist(self, a, b):
-        return self.dist_map(a)[b]
+    def dist(self, a, b, strict=False):
+        return self.dist_map(a, strict)[b]
 
     def week(self):
         return (self.round - 1) // 3
@@ -250,7 +263,12 @@ class Game:
         return self.rng.randint(1, 6)
 
     # -- ações
-    def move_cost(self, p, use=False):
+    def move_cost(self, p, use=False, dest=None):
+        if (self.cfg.trail and p.move_credit and dest is not None and self.tiles[dest].revealed
+                and self.tiles[p.pos].revealed):
+            if use:
+                p.move_credit = False
+            return 0
         c = 1
         if not p.moved_this_round:
             if self.event == 3:
@@ -264,7 +282,12 @@ class Game:
         return c
 
     def move(self, p, dest):
-        c = self.move_cost(p, use=True)
+        credit_before = p.move_credit
+        c = self.move_cost(p, use=True, dest=dest)
+        if self.cfg.trail and c == 1 and self.tiles[dest].revealed:
+            p.move_credit = True
+        elif not (credit_before and c == 0):
+            p.move_credit = False
         p.pe -= c
         p.moved_this_round = True
         p.pos = dest
@@ -533,7 +556,7 @@ class Game:
 
     def completed(self, p):
         t = self.tiles[p.pos]
-        return p.alive and p.shelter >= 3 and t.kind == 'Re' and t.revealed
+        return p.alive and p.shelter >= self.cfg.shelter_levels and t.kind == 'Re' and t.revealed
 
     def score(self, p):
         c = self.cfg
@@ -546,7 +569,7 @@ class Game:
         for p in self.players:
             done = self.completed(p)
             reason = ('ok' if done else 'eliminado' if not p.alive else
-                      'abrigo' if p.shelter < 3 else 'fora_do_resgate')
+                      'abrigo' if p.shelter < self.cfg.shelter_levels else 'fora_do_resgate')
             out.append(dict(idx=p.idx, arch=p.arch, done=done, reason=reason,
                             ps=self.score(p) if done else None, exh=p.exh, weeks=p.weeks_paid,
                             exh_src=dict(p.exh_src), died=p.died_round,
@@ -694,11 +717,11 @@ def required_end_cost(g, p, pos, shelter=None, shelter_pos=None):
     res = g.known_rescues()
     if res:
         def dres(x):
-            dm = g.dist_map(x)
+            dm = g.dist_map(x, strict=True)
             return min(dm[r] for r in res)
     else:
         def dres(x):
-            dm = g.dist_map(x)
+            dm = g.dist_map(x, strict=True)
             hidden = [q for q in g.near_rescue if not g.tiles[q].revealed]
             return min((dm[q] for q in hidden), default=3) + 2
     if shelter >= L:
@@ -709,11 +732,11 @@ def required_end_cost(g, p, pos, shelter=None, shelter_pos=None):
     if missing > 0:
         w = nearest_wood(g, pos)
         if w is not None:
-            fetch = g.dist(pos, w) + missing
+            fetch = g.dist(pos, w, True) + missing
             via = w
     if shelter == 0:
         return fetch + builds + dres(via)
-    return fetch + g.dist(via, shelter_pos) + builds + dres(shelter_pos)
+    return fetch + g.dist(via, shelter_pos, True) + builds + dres(shelter_pos)
 
 
 def future_budget(g, p):
@@ -864,6 +887,8 @@ def team_surplus(g, p, res):
 
 def apply_action(g, p, act):
     k = act[0]
+    if k != 'goto':
+        p.move_credit = False
     if k == 'collect':
         g.collect(p, act[1])
     elif k == 'build':
@@ -885,7 +910,7 @@ def apply_action(g, p, act):
 def action_cost(g, p, act):
     k = act[0]
     if k == 'goto':
-        return g.move_cost(p)
+        return g.move_cost(p, dest=step_toward(g, p, act[1]))
     if k == 'rest':
         return g.rest_cost(p)
     if k == 'fire':
@@ -947,6 +972,7 @@ def plan_step(g, p):
 
 def take_turn(g, p):
     g.start_turn(p)
+    p.move_credit = False
     guard = 0
     while p.pe > 0 and p.alive and guard < 25 and not g.lost:
         guard += 1
