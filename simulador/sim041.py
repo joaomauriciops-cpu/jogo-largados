@@ -71,7 +71,11 @@ class Config:
     events: tuple = None              # None -> as 18 cartas
     events_per_game: int = 8
     escalate: bool = False            # Eventos em 3 fases: leves (rod. 2-3), mistos (4-6), duros (7-9)
-    escalate_harsh: int = 3           # quantos Eventos duros entram na semana 3
+    escalate_harsh: int = 3
+    guardian_mode: str = 'manual'     # 'plus': fogo para todos no tile + ignora 1 Desgaste de Evento/semana
+    archetypes: tuple = None          # None -> os 7
+    surv_events: bool = False         # Sobrevivencialista também ignora Desgaste de Evento (mesmo uso semanal)
+    explorer_mode: str = 'move'       # 'move' (manual) | 'explore' | 'both'           # quantos Eventos duros entram na semana 3
     caps: tuple = (3, 2, 2)
     ai: dict = field(default_factory=dict)
 
@@ -133,6 +137,7 @@ class Player:
     # por rodada (Eventos)
     target: tuple = None
     move_credit: bool = False
+    extra_used: bool = False          # 2º uso semanal (Guardião plus / Explorador both)
     ev_used: bool = False
     turn_start_at_shelter: bool = False
     moved_this_round: bool = False
@@ -172,7 +177,7 @@ class Game:
             deck = duros[:h] + mistos[:6 - h] + leves[:2]   # pop() tira do fim
         self.event_deck = deck
         self.event = None
-        archs = rng.sample(ARCHETYPES, n)
+        archs = rng.sample(list(cfg.archetypes or ARCHETYPES), n)
         items = rng.sample(ITEMS, n)
         self.players = [Player(i, archs[i], self.start, item=items[i]) for i in range(n)]
         self.round = 0
@@ -239,8 +244,13 @@ class Game:
     # -- efeitos
     def gain_exh(self, p, src, n=1):
         for _ in range(n):
+            if (src == 'evento' and p.arch == 'Guardiao' and self.cfg.guardian_mode in ('plus', 'event')
+                    and not p.extra_used):
+                p.extra_used = True
+                self.say(f'    P{p.idx} Guardião ignora Desgaste de Evento')
+                continue
             if (p.arch == 'Sobrevivencialista' and not p.ability_used
-                    and src in ('risco', 'agua_sem_fogo')):
+                    and (src in ('risco', 'agua_sem_fogo') or (src == 'evento' and self.cfg.surv_events))):
                 p.ability_used = True
                 self.say(f'    P{p.idx} Sobrevivencialista ignora Desgaste ({src})')
                 continue
@@ -275,7 +285,7 @@ class Game:
                 c = 1 if p.turn_start_at_shelter else 2
             elif self.event == 13:
                 c = 0
-        if c > 0 and p.arch == 'Explorador' and not p.ability_used:
+        if c > 0 and p.arch == 'Explorador' and not p.ability_used and self.cfg.explorer_mode in ('move', 'both'):
             if use:
                 p.ability_used = True
             c = 0
@@ -293,8 +303,21 @@ class Game:
         p.pos = dest
         self.say(f'    P{p.idx} move {dest}{"" if self.tiles[dest].revealed else " (oculto)"} [{c} PE]')
 
+    def explore_cost(self, p, use=False):
+        if p.arch == 'Explorador':
+            m = self.cfg.explorer_mode
+            if m == 'explore' and not p.ability_used:
+                if use:
+                    p.ability_used = True
+                return 0
+            if m == 'both' and not p.extra_used:
+                if use:
+                    p.extra_used = True
+                return 0
+        return self.cfg.explore_cost
+
     def explore(self, p):
-        p.pe -= self.cfg.explore_cost
+        p.pe -= self.explore_cost(p, use=True)
         t = self.tiles[p.pos]
         t.revealed = True
         self.version += 1
@@ -429,13 +452,17 @@ class Game:
         self.say(f'  * Evento: {EVENT_NAMES[self.event]}')
         if self.event == 10:
             for p in self.players:
-                if p.alive and p.shelter > 0:
+                if p.alive and p.shelter > 0 and not self.fire_immune(p):
                     if p.water > 0 and water_value(self, p, -1) < 8:
                         p.water -= 1
                     elif p.water > 0 and p.exh + 1 >= self.cfg.exh_limit:
                         p.water -= 1
                     else:
                         self.gain_exh(p, 'evento')
+
+    def fire_immune(self, p):
+        return (p.arch == 'Guardiao' and self.cfg.guardian_mode == 'fire_events'
+                and self.event in (2, 6, 10))
 
     def start_turn(self, p):
         p.pe = pe_per_turn(self, p)
@@ -445,6 +472,8 @@ class Game:
         p.free_build = False
         p.turn_start_at_shelter = p.shelter > 0 and p.pos == p.shelter_pos
         e = self.event
+        if self.fire_immune(p):
+            e = None
         if e == 2:
             if p.exh == 0 and aiget(self, p, 'risk_aversion', 1.0) <= 1.0:
                 if self.d6() % 2:
@@ -477,7 +506,7 @@ class Game:
         p.pe = max(0, p.pe)
 
     def end_turn(self, p):
-        if self.event == 6 and p.alive and not p.fire and not (
+        if self.event == 6 and p.alive and not p.fire and not self.fire_immune(p) and not (
                 p.shelter > 0 and p.pos == p.shelter_pos):
             if p.pe > 0:
                 p.pe -= 1
@@ -496,7 +525,8 @@ class Game:
                 for q in self.players:
                     if q is not g and q.alive and q.pos == g.pos and not q.fire and q.water >= cfg.week_water[w]:
                         shared.add(q.idx)
-                        break
+                        if cfg.guardian_mode not in ('plus', 'share'):
+                            break
         for p in self.turn_order():
             if not p.alive:
                 continue
@@ -533,6 +563,7 @@ class Game:
             p.fire = False
             p.ability_used = False
             p.rest_used = False
+            p.extra_used = False
         self.say(f'  == Prova {w + 1}: ' + ', '.join(
             f'P{p.idx} d={p.exh} abr={p.shelter} c={p.food} a={p.water}{"" if p.alive else " X"}' for p in self.players))
 
@@ -916,7 +947,7 @@ def action_cost(g, p, act):
     if k == 'fire':
         return g.cfg.fire_cost
     if k == 'explore':
-        return g.cfg.explore_cost
+        return g.explore_cost(p)
     if k == 'build':
         return 0 if g.event == 18 and not p.free_build else 1
     if k == 'event':
